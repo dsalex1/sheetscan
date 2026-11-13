@@ -20,7 +20,7 @@ const downloading = (done, total) => post('status', { text: 'Downloading recogni
 
 /** Start the networks in the worker behind `port`; returns names() and run() which block for the answer. */
 async function startBlockingBridge(port) {
-  if (!self.crossOriginIsolated)
+  if (typeof SharedArrayBuffer !== 'function')
     throw new Error('This browser gave the page no shared memory, which the recogniser needs here. Reload the page once; if that does not help, use a current Chrome, Edge or Firefox.')
   const shared = new SharedArrayBuffer(8 + SHARED)
   const flag = new Int32Array(shared, 0, 2) // [answer is there, length of its JSON header]

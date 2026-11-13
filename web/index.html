@@ -6,6 +6,11 @@
     <meta name="description" content="Turn scanned sheet music (PDF or photos) into editable MusicXML and MIDI, right in your browser." />
     <title>Sheetscan – sheet music to MusicXML</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎼</text></svg>" />
+    <!-- Shared memory (threads, and the whole recogniser on Safari before 27) needs a
+         cross-origin isolated page; a static host sends no such headers, so a service
+         worker adds them. Its default "credentialless" mode leaves WebKit's workers
+         without shared memory: ask for require-corp. -->
+    <script>window.coi = { coepCredentialless: () => false }</script>
     <script src="coi-serviceworker.min.js"></script>
     <link rel="stylesheet" href="/src/style.css" />
   </head>

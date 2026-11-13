@@ -36,7 +36,7 @@ export async function load(base, onProgress) {
   ort = await import(/* @vite-ignore */ ORT + 'ort.wasm.min.mjs')
   ort.env.wasm.wasmPaths = ORT
   // Threads need shared memory; phones get fewer, each costs memory.
-  ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(navigator.hardwareConcurrency || 4, 8) : 1
+  ort.env.wasm.numThreads = typeof SharedArrayBuffer === 'function' ? Math.min(navigator.hardwareConcurrency || 4, 8) : 1
   const progress = {}
   await Promise.all(MODELS.map(async (name) => {
     const bytes = await cached(`${base}models/${name}.onnx`, (got, total) => {
