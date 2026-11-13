@@ -24,7 +24,6 @@ for _name, _attrs in (("requests", {}), ("pypdfium2", {}), ("rapidocr", {"RapidO
         _mod.__dict__.update(_attrs)
         sys.modules[_name] = _mod
 
-from homr import main as homr_main  # noqa: E402
 from homr import music_xml_generator, staff_parsing  # noqa: E402
 from homr.main import ProcessingConfig, detect_staffs_in_image  # noqa: E402
 from homr.model import MultiStaff  # noqa: E402
@@ -81,6 +80,11 @@ def _has_eight_below(image, x0, x1, lines, limit, bass):
     )
 
 
+def _has_pitch(symbol):
+    """A note the transformer gave a pitch like "C4" (now and then it gives none)."""
+    return symbol.rhythm.startswith("note") and symbol.pitch[:1] in tuple("CDEFGAB") and symbol.pitch[1:].isdigit()
+
+
 def _staff_name(symbol):
     return "lower" if symbol.position.startswith("lower") else "upper"
 
@@ -96,7 +100,7 @@ def _mark_octave_clefs(image, staff, symbols, carried):
         name = _staff_name(symbol)
         if symbol.rhythm.startswith(("note", "rest")):
             started.add(name)
-            if state.get(name, (False,))[0] and symbol.rhythm.startswith("note"):
+            if state.get(name, (False,))[0] and _has_pitch(symbol):
                 symbol.pitch = symbol.pitch[:-1] + str(int(symbol.pitch[-1]) - 1)
         elif symbol.rhythm.startswith("clef"):
             sign = symbol.rhythm.split("_")[1][0]
@@ -117,59 +121,16 @@ def _mark_octave_clefs(image, staff, symbols, carried):
     return state
 
 
-_STEPS = "CDEFGAB"
-_CLEF_PITCH = {"G": 7 * 4 + 4, "F": 7 * 3 + 3, "C": 7 * 4}  # the note a clef names, as octave * 7 + step
-_noteheads = []  # centres (x, y) of all noteheads homr's segmentation found on the page
-
-
-def _trust_noteheads_far_from_staff(staff, symbols):
-    """The transformer miscounts ledger lines far from the staff (the C five lines under
-    the bass staff comes out as E). The notehead blob itself is easy to place: where one
-    lies within a third of what was read, beyond three ledger lines, take its position."""
-    bottom = {}  # staff name -> the pitch on its bottom line under the clef in force
-    grand = len(staff.grid[0].y) > 5
-    for symbol in symbols:
-        name = _staff_name(symbol)
-        if symbol.rhythm.startswith("clef"):
-            sign, line = symbol.rhythm.split("_")[1][0], symbol.rhythm.split("_")[1][1:]
-            if sign in _CLEF_PITCH and line.isdigit():
-                bottom[name] = _CLEF_PITCH[sign] - 2 * (int(line) - 1)
-        elif symbol.rhythm.startswith("note") and name in bottom and symbol.image_coordinates:
-            read = 7 * int(symbol.pitch[-1]) + _STEPS.index(symbol.pitch[0]) - bottom[name]
-            # In a grand staff only the outer sides: between the staves a note could be either's.
-            if (read > -6 or (grand and name == "upper")) and (read < 14 or (grand and name == "lower")):
-                continue
-            x = symbol.image_coordinates[0]
-            point = staff.get_at(x)
-            k = 5 if name == "lower" else 0
-            if point is None or len(point.y) < k + 5:
-                continue
-            step = (point.y[k + 4] - point.y[k]) / 8  # half the distance between two lines
-            seen = [round((point.y[k + 4] - ny) / step) for nx, ny in _noteheads if abs(nx - x) < 3 * step]
-            seen = [at for at in seen if abs(at - read) <= 2 and not -5 < at < 13]
-            if seen and read not in seen:
-                pitch = bottom[name] + min(seen, key=lambda at: abs(at - read))
-                symbol.pitch = _STEPS[pitch % 7] + str(pitch // 7)
-
-
-_add_notes_to_staffs = homr_main.add_notes_to_staffs
-
-
-def _add_notes_to_staffs_and_keep_them(staffs, noteheads, *args):
-    global _noteheads
-    _noteheads = [n.notehead.center for n in noteheads]
-    return _add_notes_to_staffs(staffs, noteheads, *args)
-
-
 _parse_staff_image = staff_parsing.parse_staff_image
 _build_clef = music_xml_generator.build_clef
 _line_above = None  # (top of the staff, how its octave clefs ended) of the last staff read
 
 
 def _parse_staff_image_with_octave_clefs(debug, index, staff, image, *args, **kwargs):
+    # (Placing notes far from the staff by their notehead blob instead of the transformer's
+    # count of ledger lines was tried here: no gain, chord heads run together.)
     global _line_above
     symbols = _parse_staff_image(debug, index, staff, image, *args, **kwargs)
-    _trust_noteheads_far_from_staff(staff, symbols)
     # homr reads a part line by line down the page, then starts the next part at the top.
     carried = _line_above[1] if _line_above and _line_above[0] < staff.min_y else {}
     _line_above = (staff.min_y, _mark_octave_clefs(image, staff, symbols, carried))
@@ -247,7 +208,6 @@ def _build_note_id(note, symbol):
 
 # homr has no hooks; its functions look these up as module globals on every call.
 staff_parsing.parse_staff_image = _parse_staff_image_with_octave_clefs
-homr_main.add_notes_to_staffs = _add_notes_to_staffs_and_keep_them
 music_xml_generator.build_clef = _build_clef_with_octave
 music_xml_generator.build_image_position = _build_note_id
 

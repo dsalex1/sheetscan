@@ -19,9 +19,8 @@ downloads the recognition models (about 150 MB), which the browser keeps.
   `onnxruntime` package.
 - `web/src/py/pipeline.py` drives homr page by page and adds what it lacks:
   octave clefs (the small 8 under a clef), systems told apart by their joining line,
-  a repair of misread tuplets by measure length, noteheads far from the staff placed by
-  their position rather than by counting ledger lines, and note ids which record where
-  on the page each note was read.
+  a repair of misread tuplets by measure length, and note ids which record where on the
+  page each note was read.
 - **Text** — title, composer, lyrics and chord symbols — comes from the PDF's text
   layer, or from OCR ([Tesseract](https://tesseract.projectnaptha.com)) for scans and
   photos, and is placed by position (`web/src/annotate.js`).
