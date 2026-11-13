@@ -117,10 +117,16 @@ export function annotate(doc, text) {
     if (!added.title) {
       // The largest text above the first staff is the title; text at the right, the composer.
       const head = all.filter((t) => t.y < staffs[0][1] - (staffs[0][3] - staffs[0][1]) && t.str.length > 1)
-      const title = head.reduce((best, t) => (!best || t.h > best.h ? t : best), null)
+      const largest = head.reduce((best, t) => (!best || t.h > best.h ? t : best), null)
+      // OCR gives a title word by word: take its whole line.
+      const title = largest && {
+        ...largest,
+        str: head.filter((t) => Math.abs(t.y - largest.y) < 0.5 * largest.h && t.h > 0.7 * largest.h)
+          .sort((a, b) => a.x - b.x).map((t) => t.str).join(' '),
+      }
       if (title && page === Math.min(...layout.map((s, i) => (s.length ? i : Infinity)))) {
         added.title = title.str
-        const composer = head.filter((t) => t !== title && t.h < 0.8 * title.h && t.x + t.w / 2 > (staffs[0][0] + staffs[0][2]) / 2)
+        const composer = head.filter((t) => t.h < 0.7 * title.h && t.x + t.w / 2 > (staffs[0][0] + staffs[0][2]) / 2)
           .reduce((best, t) => (!best || t.y > best.y ? t : best), null)
         const root = doc.documentElement
         root.querySelector(':scope > work')?.remove()
@@ -131,10 +137,13 @@ export function annotate(doc, text) {
 
     // Lines of text between the staves: chord symbols belong to the staff below,
     // lyrics to the staff above.
+    // OCR gives each word its own box, so baselines and heights wobble: group generously.
+    const heights = all.map((t) => t.h).sort((a, b) => a - b)
+    const typical = heights[heights.length >> 1]
     const lines = []
     for (const t of all.filter((t) => !inStaff(t)).sort((a, b) => a.y - b.y)) {
       const line = lines.at(-1)
-      if (line && t.y - line[0].y < 0.5 * t.h) line.push(t)
+      if (line && t.y - line[0].y < 0.5 * Math.max(t.h, typical)) line.push(t)
       else lines.push([t])
     }
     const verses = new Map() // staff index -> lyric lines so far
@@ -145,9 +154,14 @@ export function annotate(doc, text) {
       const below = staffs.map((s, i) => [s[1] - y, i]).filter(([d]) => d > 0).sort((a, b) => a[0] - b[0])[0]
       const unit = (i) => (staffs[i][3] - staffs[i][1]) / 4
       const chords = line.map((t) => CHORD.exec(t.str))
-      const isChordLine = chords.filter(Boolean).length >= 0.6 * line.length
+      // Chord symbols sit close above their staff, lyrics close below theirs: the nearer
+      // staff says which a line is. (Its words alone don't: OCR garbles some chords, and
+      // "A" or "Am" can be a syllable.)
+      const nearerBelow = below && (!above || below[0] < above[0])
+      const found = chords.filter(Boolean).length
 
-      if (isChordLine && below && below[0] < 8 * unit(below[1])) {
+      if (nearerBelow) {
+        if (below[0] > 8 * unit(below[1]) || found < Math.min(2, line.length)) continue
         const anchors = byStaff.get(`${page}/${below[1]}`) ?? []
         // Rehearsal letters match too, but are set in another size than the chords.
         const sizes = line.filter((t, i) => chords[i]).map((t) => t.h).sort((a, b) => a - b)
@@ -158,19 +172,19 @@ export function annotate(doc, text) {
           anchor.el.parentNode.insertBefore(harmony(doc, chords[i], offset), anchor.el)
           added.chords++
         })
-      } else if (above && above[0] < 10 * unit(above[1])) {
+      } else if (above[0] < 10 * unit(above[1]) && found < 0.5 * line.length) {
         // Other programs write several words as one piece of text: place each by its share.
         const words = line
           .flatMap((t) => {
             let at = 0
-            return t.str.split(' ').map((str) => {
+            return t.str.split(/ |(?<=\p{L}[-‐])(?=\p{L})/u).map((str) => {  // "Danc-ing" is two syllables
               const word = { ...t, str, x: t.x + (t.w * at) / t.str.length, w: (t.w * str.length) / t.str.length }
               at += str.length + 1
               return word
             })
           })
           .filter((t) => t.str && !/^[\d.,()]+$/.test(t.str))
-        if (words.filter((t) => !/^[-–—_]+$/.test(t.str)).length < 3) continue
+        if (words.filter((t) => !/^[-‐–—_]+$/.test(t.str)).length < 3) continue
         const verse = (verses.get(above[1]) ?? 0) + 1
         verses.set(above[1], verse)
         const free = (byStaff.get(`${page}/${above[1]}`) ?? []).filter((a) => a.pitched)
@@ -178,10 +192,11 @@ export function annotate(doc, text) {
         let joined = false // the syllable before ended in a hyphen
         for (let i = 0; i < words.length; i++) {
           const raw = words[i].str
-          if (/^[-–—]+$/.test(raw)) { joined = true; continue }
-          if (/^_+$/.test(raw)) continue
-          const syllable = raw.replace(/^[-–—]+|[-–—_]+$/g, '')
-          const joins = /[-–—]$/.test(raw) || /^[-–—]+$/.test(words[i + 1]?.str ?? '') || /^[-–—]/.test(words[i + 1]?.str ?? '')
+          if (/^[-‐]+$/.test(raw)) { joined = true; continue }
+          if (/^[–—_]+$/.test(raw)) continue // a line which extends a syllable
+          const syllable = raw.replace(/^[-‐]+|[-‐–—_]+$/g, '')
+          const next = words[i + 1]?.str ?? ''
+          const joins = /[-‐]$/.test(raw) || /^[-‐]/.test(next)
           const centre = words[i].x + words[i].w / 2
           const note = free.reduce((best, a) => (!best || Math.abs(a.x - centre) < Math.abs(best.x - centre) ? a : best), null)
           if (syllable && note && Math.abs(note.x - centre) < reach) {

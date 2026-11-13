@@ -19,10 +19,12 @@ downloads the recognition models (about 150 MB), which the browser keeps.
   `onnxruntime` package.
 - `web/src/py/pipeline.py` drives homr page by page and adds what it lacks:
   octave clefs (the small 8 under a clef), systems told apart by their joining line,
-  a repair of misread tuplets by measure length, and note ids which record where on the
-  page each note was read.
-- **Text** — title, composer, lyrics and chord symbols — is taken from the PDF's text
-  layer and placed by position (`web/src/annotate.js`).
+  a repair of misread tuplets by measure length, noteheads far from the staff placed by
+  their position rather than by counting ledger lines, and note ids which record where
+  on the page each note was read.
+- **Text** — title, composer, lyrics and chord symbols — comes from the PDF's text
+  layer, or from OCR ([Tesseract](https://tesseract.projectnaptha.com)) for scans and
+  photos, and is placed by position (`web/src/annotate.js`).
 - **Display, playback and MIDI** use [Verovio](https://www.verovio.org); PDFs are
   rendered with [pdf.js](https://mozilla.github.io/pdf.js/).
 
@@ -51,9 +53,10 @@ may have been cut short when it was saved, so the figure (0.32) is not a fair on
 
 PHOTOSCAN
 
-Known limits: drum notation and tablature are not read; lyrics and chord symbols need a
-PDF with a text layer (photos give notes only); repeats and voltas are kept, but
-ornaments and articulations only in part.
+Known limits: drum notation and tablature are not read; rhythm slashes come out as
+notes; on scans and photos the text is read by OCR, which gets most lyrics but only part
+of the chord symbols (and no flats); ornaments and articulations are kept only in part.
+A page takes about half a minute on a desktop computer, the first one a minute more.
 
 ## Develop
 

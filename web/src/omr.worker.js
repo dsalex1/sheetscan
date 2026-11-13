@@ -53,6 +53,7 @@ function init() {
         const all = Object.values(progress)
         const sum = (i) => all.reduce((s, p) => s + p[i], 0)
         post('status', { text: 'Downloading recognition models (once)…', done: sum(0), total: sum(1) })
+        // WASM with threads; the WebGPU provider was tried and stalled while starting.
       }).then((buf) => ort.InferenceSession.create(buf, { executionProviders: ['wasm'] })))
     MODELS.forEach(loadModel) // start downloads while Python boots
 

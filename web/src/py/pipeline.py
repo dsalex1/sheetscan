@@ -12,6 +12,7 @@ import types
 import xml.etree.ElementTree as ET
 
 import cv2
+import numpy as np
 
 # homr imports these at module level but only uses them for downloads, PDF
 # rendering and title OCR, none of which this pipeline calls.
@@ -23,6 +24,7 @@ for _name, _attrs in (("requests", {}), ("pypdfium2", {}), ("rapidocr", {"RapidO
         _mod.__dict__.update(_attrs)
         sys.modules[_name] = _mod
 
+from homr import main as homr_main  # noqa: E402
 from homr import music_xml_generator, staff_parsing  # noqa: E402
 from homr.main import ProcessingConfig, detect_staffs_in_image  # noqa: E402
 from homr.model import MultiStaff  # noqa: E402
@@ -43,6 +45,17 @@ _TRANSFORMER.use_gpu_inference = False
 _TRANSFORMER.use_coreml_encoder = False
 
 
+def _ink(region):
+    """Mask (0/255) of what is printed in a piece of the page. The cut is nearer to the
+    paper than to the darkest ink, so that thin strokes a scanner turned grey still count."""
+    if region.size == 0:
+        return np.zeros((1, 1), np.uint8)
+    paper, darkest = float(np.median(region)), float(region.min())
+    if paper - darkest < 40:  # nothing printed here
+        return np.zeros(region.shape, np.uint8)
+    return (region < paper - 0.3 * (paper - darkest)).astype(np.uint8) * 255
+
+
 def _has_eight_below(image, x0, x1, lines, limit, bass):
     """Is there a small "8" under a clef (an octave clef)? lines are the staff's five
     line positions there. An 8 is the only glyph with two small holes, one above the
@@ -51,10 +64,7 @@ def _has_eight_below(image, x0, x1, lines, limit, bass):
     of its own there, and its 8 hangs below the tail."""
     unit, bottom = (lines[4] - lines[0]) / 4, lines[4]
     y0, y1 = int(bottom - (1.2 if bass else 0.3) * unit), int(min(bottom + 5 * unit, limit))
-    roi = image[y0:y1, max(int(x0), 0) : int(x1)]
-    if roi.size == 0:
-        return False
-    _, ink = cv2.threshold(roi, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    ink = _ink(image[y0:y1, max(int(x0), 0) : int(x1)])
     contours, hierarchy = cv2.findContours(ink, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
     if hierarchy is None:
         return False
@@ -75,39 +85,94 @@ def _staff_name(symbol):
     return "lower" if symbol.position.startswith("lower") else "upper"
 
 
-def _mark_octave_clefs(image, staff, symbols):
+def _mark_octave_clefs(image, staff, symbols, carried):
     """Renames clefs with an 8 below to clef_.._8vb and lowers the notes they govern.
     The first clef of a staff sits at its start; a later one (a clef change) is looked
-    for around where the transformer saw it."""
-    lowered, started = {}, set()
+    for around where the transformer saw it. `carried` is how the line above ended,
+    {staff name: (lowered, clef sign)}: a line starts as the last one ended, so an 8
+    which is missed there is still known. Returns the same for this line."""
+    state, started = dict(carried), set()
     for symbol in symbols:
         name = _staff_name(symbol)
         if symbol.rhythm.startswith(("note", "rest")):
             started.add(name)
-            if lowered.get(name) and symbol.rhythm.startswith("note"):
+            if state.get(name, (False,))[0] and symbol.rhythm.startswith("note"):
                 symbol.pitch = symbol.pitch[:-1] + str(int(symbol.pitch[-1]) - 1)
         elif symbol.rhythm.startswith("clef"):
-            center = getattr(symbol, "image_coordinates", None)
-            point = staff.get_at(center[0]) if name in started and center else staff.grid[0]
+            sign = symbol.rhythm.split("_")[1][0]
+            change = name in started and symbol.image_coordinates
+            point = staff.get_at(symbol.image_coordinates[0]) if change else staff.grid[0]
             k = 5 if name == "lower" else 0
             if point is None or len(point.y) < k + 5:
                 continue
             lines = point.y[k : k + 5]
             unit = (lines[4] - lines[0]) / 4
-            x0, x1 = (center[0] - 2 * unit, center[0] + 2 * unit) if name in started and center else (point.x - unit, point.x + 4 * unit)
+            x = symbol.image_coordinates[0] if change else point.x + 1.5 * unit
             limit = point.y[5] - unit if k == 0 and len(point.y) > 5 else image.shape[0]
-            lowered[name] = _has_eight_below(image, x0, x1, lines, limit, "_F" in symbol.rhythm)
-            if lowered[name]:
+            found = _has_eight_below(image, x - 2.5 * unit, x + 2.5 * unit, lines, limit, sign == "F")
+            lowered = found or (name not in started and carried.get(name) == (True, sign))
+            state[name] = (lowered, sign)
+            if lowered:
                 symbol.rhythm += "_8vb"
+    return state
+
+
+_STEPS = "CDEFGAB"
+_CLEF_PITCH = {"G": 7 * 4 + 4, "F": 7 * 3 + 3, "C": 7 * 4}  # the note a clef names, as octave * 7 + step
+_noteheads = []  # centres (x, y) of all noteheads homr's segmentation found on the page
+
+
+def _trust_noteheads_far_from_staff(staff, symbols):
+    """The transformer miscounts ledger lines far from the staff (the C five lines under
+    the bass staff comes out as E). The notehead blob itself is easy to place: where one
+    lies within a third of what was read, beyond three ledger lines, take its position."""
+    bottom = {}  # staff name -> the pitch on its bottom line under the clef in force
+    grand = len(staff.grid[0].y) > 5
+    for symbol in symbols:
+        name = _staff_name(symbol)
+        if symbol.rhythm.startswith("clef"):
+            sign, line = symbol.rhythm.split("_")[1][0], symbol.rhythm.split("_")[1][1:]
+            if sign in _CLEF_PITCH and line.isdigit():
+                bottom[name] = _CLEF_PITCH[sign] - 2 * (int(line) - 1)
+        elif symbol.rhythm.startswith("note") and name in bottom and symbol.image_coordinates:
+            read = 7 * int(symbol.pitch[-1]) + _STEPS.index(symbol.pitch[0]) - bottom[name]
+            # In a grand staff only the outer sides: between the staves a note could be either's.
+            if (read > -6 or (grand and name == "upper")) and (read < 14 or (grand and name == "lower")):
+                continue
+            x = symbol.image_coordinates[0]
+            point = staff.get_at(x)
+            k = 5 if name == "lower" else 0
+            if point is None or len(point.y) < k + 5:
+                continue
+            step = (point.y[k + 4] - point.y[k]) / 8  # half the distance between two lines
+            seen = [round((point.y[k + 4] - ny) / step) for nx, ny in _noteheads if abs(nx - x) < 3 * step]
+            seen = [at for at in seen if abs(at - read) <= 2 and not -5 < at < 13]
+            if seen and read not in seen:
+                pitch = bottom[name] + min(seen, key=lambda at: abs(at - read))
+                symbol.pitch = _STEPS[pitch % 7] + str(pitch // 7)
+
+
+_add_notes_to_staffs = homr_main.add_notes_to_staffs
+
+
+def _add_notes_to_staffs_and_keep_them(staffs, noteheads, *args):
+    global _noteheads
+    _noteheads = [n.notehead.center for n in noteheads]
+    return _add_notes_to_staffs(staffs, noteheads, *args)
 
 
 _parse_staff_image = staff_parsing.parse_staff_image
 _build_clef = music_xml_generator.build_clef
+_line_above = None  # (top of the staff, how its octave clefs ended) of the last staff read
 
 
 def _parse_staff_image_with_octave_clefs(debug, index, staff, image, *args, **kwargs):
+    global _line_above
     symbols = _parse_staff_image(debug, index, staff, image, *args, **kwargs)
-    _mark_octave_clefs(image, staff, symbols)
+    _trust_noteheads_far_from_staff(staff, symbols)
+    # homr reads a part line by line down the page, then starts the next part at the top.
+    carried = _line_above[1] if _line_above and _line_above[0] < staff.min_y else {}
+    _line_above = (staff.min_y, _mark_octave_clefs(image, staff, symbols, carried))
     return symbols
 
 
@@ -182,6 +247,7 @@ def _build_note_id(note, symbol):
 
 # homr has no hooks; its functions look these up as module globals on every call.
 staff_parsing.parse_staff_image = _parse_staff_image_with_octave_clefs
+homr_main.add_notes_to_staffs = _add_notes_to_staffs_and_keep_them
 music_xml_generator.build_clef = _build_clef_with_octave
 music_xml_generator.build_image_position = _build_note_id
 
@@ -192,7 +258,7 @@ def _are_joined(image, upper, lower):
     unit = (a.y[4] - a.y[0]) / 4
     x = int(max(a.x, b.x))
     gap = image[int(a.y[-1] + unit / 2) : int(b.y[0] - unit / 2), max(int(x - 1.5 * unit), 0) : int(x + 1.5 * unit)]
-    return gap.size > 0 and (gap < 140).any(axis=1).mean() > 0.95
+    return gap.size > 0 and _ink(gap).any(axis=1).mean() > 0.95
 
 
 def _split_unjoined_systems(image, rows):
@@ -228,6 +294,8 @@ def _staff_boxes(rows, to_input):
 
 def _read_page(path):
     """One page image -> (MusicXML <score-partwise> element, staff boxes)."""
+    global _line_above
+    _line_above = None
     rows, image, debug, _, _, to_input = detect_staffs_in_image(path, _CONFIG)
     try:
         rows = _split_unjoined_systems(image, repair_systems(debug, rows))

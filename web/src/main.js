@@ -1,5 +1,6 @@
 import { annotate, tokens } from './annotate.js'
 import { loadPages } from './input.js'
+import { ocr } from './ocr.js'
 import { Player } from './player.js'
 import { Score, verovio } from './score.js'
 
@@ -12,9 +13,11 @@ let pages = [] // the scanned pages: {png, url, width, height, text}
 let score = null
 let selected = null // id of the selected note
 let midi = '' // base64, kept current for the MIDI download
+let started = 0 // when the current scan began
 
 // For tests and the curious: the current score from the console.
-window.sheetscan = { get xml() { return score?.xml } }
+window.sheetscan = { get xml() { return score?.xml }, seconds: null }
+const query = new URLSearchParams(location.search)
 
 // ---------- scanning ----------
 
@@ -29,7 +32,9 @@ async function scan(files) {
     return fail(`Could not read that file: ${e.message}`)
   }
   $('thumbs').replaceChildren(...pages.map((p) => Object.assign(new Image(), { src: p.url })))
+  readText() // OCR runs beside the recognition
   // Copies go to the worker; the originals stay here for the side-by-side view.
+  started = performance.now()
   worker.postMessage({ type: 'scan', pages: pages.map((p) => p.png) })
 }
 
@@ -44,31 +49,51 @@ function fail(text) {
   $('unsupported').textContent = text
 }
 
+// What the recogniser logs, turned into a line for the user and a share of the page done.
+let reading = { page: 0, pages: 1, staves: 1 }
 const DETAILS = [
-  [/Starting Inference/, 'Finding staves and symbols…'],
-  [/Found (\d+) connected staffs/, (m) => `Found ${m[1]} systems`],
-  [/Running TrOmr inference on staff image (\d+)/, (m) => `Reading staff ${+m[1] + 1}…`],
-  [/page (\d+) skipped/, (m) => `Page ${m[1]} has no music, skipped`],
+  [/Starting Inference/, () => ['Finding staves and symbols…', 0.05]],
+  [/Systems after the repair of the layout: \[(.*)\]/, (m) => {
+    reading.staves = m[1].split(',').reduce((sum, n) => sum + +n, 0) || 1
+    return [`Found ${m[1].split(',').length} systems`, 0.25]
+  }],
+  [/Running TrOmr inference on staff image (\d+)/, (m) => [`Reading staff ${+m[1] + 1} of ${reading.staves}…`, 0.25 + (0.75 * m[1]) / reading.staves]],
+  [/page (\d+) skipped/, (m) => [`Page ${m[1]} has no music, skipped`, 1]],
 ]
 
 worker.onmessage = async ({ data }) => {
   if (data.type === 'status') {
     progress(data.text, data.done, data.total)
-    if (/Reading page/.test(data.text))
-      [...$('thumbs').children].forEach((img, i) => (img.className = i < data.done ? 'done' : i === data.done ? 'now' : ''))
+    if (/Reading page/.test(data.text)) {
+      reading = { page: data.done, pages: data.total, staves: 1 }
+      ;[...$('thumbs').children].forEach((img, i) => (img.className = i < data.done ? 'done' : i === data.done ? 'now' : ''))
+    }
   } else if (data.type === 'log') {
-    for (const [pattern, text] of DETAILS) {
+    for (const [pattern, describe] of DETAILS) {
       const m = data.text.match(pattern)
-      if (m) $('detail').textContent = typeof text === 'string' ? text : text(m)
+      if (!m) continue
+      const [text, share] = describe(m)
+      $('detail').textContent = text
+      $('bar').style.width = `${(100 * (reading.page + Math.min(share, 1))) / reading.pages}%`
     }
   } else if (data.type === 'error') fail(data.text)
-  else if (data.type === 'result') await open(data.xml)
+  else if (data.type === 'result') {
+    window.sheetscan.seconds = Math.round((performance.now() - started) / 100) / 10
+    await open(data.xml)
+  }
+}
+
+/** The text of every page: a PDF brings it along, images are read by OCR (begun on load). */
+function readText() {
+  for (const page of pages) page.words ??= page.text.length ? page.text : ocr(page).catch(() => [])
+  return Promise.all(pages.map((p) => p.words))
 }
 
 async function open(xml) {
   score = new Score(xml)
   selected = null
-  annotate(score.doc, pages.map((p) => tokens(p.text)))
+  progress('Reading text…', 1, 1)
+  annotate(score.doc, (await readText()).map(tokens))
   $('title').value = score.title
   $('scan').replaceChildren(...pages.map(scanPage))
   show('work')
@@ -274,7 +299,6 @@ if (typeof WebAssembly.Suspending !== 'function') {
 
 // Development: ?demo=a.png,b.png scans images served next to the app;
 // with &xml=result.musicxml it skips recognition and opens that result for them.
-const query = new URLSearchParams(location.search)
 if (query.get('demo')) {
   const files = await Promise.all(query.get('demo').split(',').map(async (u) => new File([await (await fetch(u)).blob()], u)))
   if (!query.get('xml')) scan(files)
