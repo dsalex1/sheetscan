@@ -24,6 +24,7 @@ for _name, _attrs in (("requests", {}), ("pypdfium2", {}), ("rapidocr", {"RapidO
         _mod.__dict__.update(_attrs)
         sys.modules[_name] = _mod
 
+from homr import main as homr_main  # noqa: E402
 from homr import music_xml_generator, staff_parsing  # noqa: E402
 from homr.main import ProcessingConfig, detect_staffs_in_image  # noqa: E402
 from homr.model import MultiStaff  # noqa: E402
@@ -205,6 +206,11 @@ def _build_note_id(note, symbol):
     where = f"-p{_page}-{max(round(at[0]), 0)}-{max(round(at[1]), 0)}" if at else ""
     note.set("id", f"n{_notes}{where}")
 
+
+# homr segments a page eight tiles at a time; two at a time need far less memory at once
+# (which phones lack) and are as fast on a CPU.
+_extract = homr_main.extract
+homr_main.extract = lambda *args, **kwargs: _extract(*args, batch_size=2, **kwargs)
 
 # homr has no hooks; its functions look these up as module globals on every call.
 staff_parsing.parse_staff_image = _parse_staff_image_with_octave_clefs

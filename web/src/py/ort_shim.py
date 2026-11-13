@@ -1,29 +1,30 @@
 """Stand-in for the `onnxruntime` package inside Pyodide: forwards to onnxruntime-web.
 
-Only the surface homr uses. Tensors stay on the JS side (the decoder's KV cache
-never crosses into Python); `run_sync` needs JSPI.
+Only the surface homr uses. The JavaScript side (ort.js) offers ortNames(path) and
+ortRun(path, feeds, wanted); it answers with a promise where WebAssembly JSPI lets
+Python wait for one, and at once where the call blocks instead (see omr.worker.js).
+Outputs named "cache_out..." stay on the JavaScript side (the decoder's cache, which
+Python only hands back in the next step); an OrtValue for one is just its name.
 """
 import js
 import numpy as np
 from pyodide.ffi import run_sync, to_js
 
 
-def _tensor(a):
-    a = np.ascontiguousarray(a)
-    return js.ort.Tensor.new(str(a.dtype), to_js(a.ravel()), to_js(list(a.shape)))
+def _call(answer):
+    return run_sync(answer) if hasattr(answer, "then") else answer
 
 
 class OrtValue:
-    def __init__(self, tensor):
-        self.tensor = tensor
+    def __init__(self, array=None, kept=None):
+        self.array, self.kept = array, kept
 
     @staticmethod
     def ortvalue_from_numpy(a, *_):
-        return OrtValue(_tensor(a))
+        return OrtValue(np.ascontiguousarray(a))
 
     def numpy(self):
-        t = self.tensor
-        return np.asarray(t.data.to_py()).reshape(list(t.dims))
+        return self.array
 
 
 class _Named:
@@ -36,10 +37,10 @@ class _IOBinding:
         self.feeds, self.wanted, self.outputs = {}, [], []
 
     def bind_cpu_input(self, name, a):
-        self.feeds[name] = _tensor(a)
+        self.feeds[name] = OrtValue(np.ascontiguousarray(a))
 
     def bind_ortvalue_input(self, name, value):
-        self.feeds[name] = value.tensor
+        self.feeds[name] = value
 
     def bind_output(self, name, *_):
         if name not in self.wanted:
@@ -51,13 +52,15 @@ class _IOBinding:
 
 class InferenceSession:
     def __init__(self, path, providers=None, **_):
-        self.js = run_sync(js.ortSession(str(path)))
+        self.path = str(path)
+        names = _call(js.ortNames(self.path))
+        self.inputs, self.outputs = list(names.inputs), list(names.outputs)
 
     def get_inputs(self):
-        return [_Named(n) for n in self.js.inputNames]
+        return [_Named(n) for n in self.inputs]
 
     def get_outputs(self):
-        return [_Named(n) for n in self.js.outputNames]
+        return [_Named(n) for n in self.outputs]
 
     def get_providers(self):
         return ["CPUExecutionProvider"]
@@ -66,9 +69,21 @@ class InferenceSession:
         return _IOBinding()
 
     def run_with_iobinding(self, iobinding):
-        feeds = to_js(iobinding.feeds, dict_converter=js.Object.fromEntries)
-        result = run_sync(self.js.run(feeds))
-        iobinding.outputs = [OrtValue(getattr(result, n)) for n in iobinding.wanted]
+        feeds = {
+            name: {"keep": value.kept} if value.kept else
+            {"type": str(value.array.dtype), "dims": list(value.array.shape), "data": value.array.ravel()}
+            for name, value in iobinding.feeds.items()
+        }
+        to_object = js.Object.fromEntries
+        result = _call(js.ortRun(self.path, to_js(feeds, dict_converter=to_object), to_js(iobinding.wanted)))
+        iobinding.outputs = [
+            OrtValue(kept=name) if name.startswith("cache_out") else OrtValue(_array(getattr(result, name)))
+            for name in iobinding.wanted
+        ]
+
+
+def _array(tensor):
+    return np.asarray(tensor.data.to_py()).reshape(list(tensor.dims))
 
 
 def get_available_providers():

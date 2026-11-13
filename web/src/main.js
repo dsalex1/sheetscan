@@ -6,7 +6,16 @@ import { Score, verovio } from './score.js'
 
 const $ = (id) => document.getElementById(id)
 const show = (view) => (document.body.dataset.view = view)
+const query = new URLSearchParams(location.search)
 const worker = new Worker(new URL('./omr.worker.js', import.meta.url), { type: 'module' })
+// Browsers without WebAssembly JSPI (Safari before 27) need the networks in a worker of
+// their own, see omr.worker.js. ?nojspi forces that way, to test it in other browsers.
+let bridgePort = null
+if (typeof WebAssembly.Suspending !== 'function' || query.has('nojspi')) {
+  const channel = new MessageChannel()
+  new Worker(new URL('./ort.worker.js', import.meta.url), { type: 'module' }).postMessage({ port: channel.port1 }, [channel.port1])
+  bridgePort = channel.port2
+}
 const player = new Player()
 
 let pages = [] // the scanned pages: {png, url, width, height, text}
@@ -16,8 +25,7 @@ let midi = '' // base64, kept current for the MIDI download
 let started = 0 // when the current scan began
 
 // For tests and the curious: the current score from the console.
-window.sheetscan = { get xml() { return score?.xml }, seconds: null }
-const query = new URLSearchParams(location.search)
+window.sheetscan = { get xml() { return score?.xml }, seconds: null, bridge: null }
 
 // ---------- scanning ----------
 
@@ -35,7 +43,8 @@ async function scan(files) {
   readText() // OCR runs beside the recognition
   // Copies go to the worker; the originals stay here for the side-by-side view.
   started = performance.now()
-  worker.postMessage({ type: 'scan', pages: pages.map((p) => p.png) })
+  worker.postMessage({ pages: pages.map((p) => p.png), port: bridgePort }, bridgePort ? [bridgePort] : [])
+  bridgePort = null // handed over with the first scan
 }
 
 function progress(text, done, total) {
@@ -78,7 +87,7 @@ worker.onmessage = async ({ data }) => {
     }
   } else if (data.type === 'error') fail(data.text)
   else if (data.type === 'result') {
-    window.sheetscan.seconds = Math.round((performance.now() - started) / 100) / 10
+    Object.assign(window.sheetscan, { seconds: Math.round((performance.now() - started) / 100) / 10, bridge: data.bridge })
     await open(data.xml)
   }
 }
@@ -294,10 +303,6 @@ addEventListener('resize', () => {
   resizing = setTimeout(() => score && document.body.dataset.view === 'work' && draw(), 250)
 })
 
-if (typeof WebAssembly.Suspending !== 'function') {
-  $('unsupported').hidden = false
-  $('unsupported').textContent = 'This browser cannot run the recogniser yet (it lacks WebAssembly JSPI). Please use a current Chrome, Edge or Firefox.'
-}
 
 // Development: ?demo=a.png,b.png scans images served next to the app;
 // with &xml=result.musicxml it skips recognition and opens that result for them.
