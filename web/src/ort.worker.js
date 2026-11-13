@@ -33,7 +33,7 @@ async function handle(data, port) {
     return
   }
   try {
-    if (data.op === 'names') return answer(names(data.path))
+    if (data.op === 'names') return answer(await names(data.path))
     const out = await run(data.path, data.feeds, data.wanted)
     let at = DATA
     for (const tensor of Object.values(out)) {

@@ -20,6 +20,12 @@ export function ocr(page) {
   return (last = last.catch(() => {}).then(() => read(page))) // the worker takes one page at a time
 }
 
+/** Stop Tesseract and give its memory back; the next ocr() starts it again. */
+export function stop() {
+  worker?.then((started) => started.terminate()).catch(() => {})
+  worker = null
+}
+
 async function read(page) {
   const { data } = await (await (worker ??= start())).recognize(page.url, {}, { blocks: true })
   return (data.blocks ?? [])

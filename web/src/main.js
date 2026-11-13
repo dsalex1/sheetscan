@@ -1,21 +1,34 @@
 import { annotate, tokens } from './annotate.js'
 import { loadPages } from './input.js'
-import { ocr } from './ocr.js'
+import { ocr, stop as stopOcr } from './ocr.js'
 import { Player } from './player.js'
 import { Score, verovio } from './score.js'
 
 const $ = (id) => document.getElementById(id)
 const show = (view) => (document.body.dataset.view = view)
 const query = new URLSearchParams(location.search)
-const worker = new Worker(new URL('./omr.worker.js', import.meta.url), { type: 'module' })
-// Browsers without WebAssembly JSPI (Safari before 27) need the networks in a worker of
-// their own, see omr.worker.js. ?nojspi forces that way, to test it in other browsers.
-let bridgePort = null
-if (typeof WebAssembly.Suspending !== 'function' || query.has('nojspi')) {
-  const channel = new MessageChannel()
-  new Worker(new URL('./ort.worker.js', import.meta.url), { type: 'module' }).postMessage({ port: channel.port1 }, [channel.port1])
-  bridgePort = channel.port2
+// Phones and tablets have little memory to spare: there the recogniser is shut down
+// again after each scan. (An iPad calls itself a Macintosh, but has a touch screen.)
+const smallDevice = /iPhone|iPad|iPod|Android/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1) || query.has('small')
+let workers = null
+
+/** The recognition worker, started on first use. */
+function recogniser() {
+  if (workers) return workers[0]
+  const worker = new Worker(new URL('./omr.worker.js', import.meta.url), { type: 'module' })
+  worker.onmessage = onWorkerMessage
+  workers = [worker]
+  // Browsers without WebAssembly JSPI (Safari before 27) need the networks in a worker of
+  // their own, see omr.worker.js. ?nojspi forces that way, to test it in other browsers.
+  if (typeof WebAssembly.Suspending !== 'function' || query.has('nojspi')) {
+    const channel = new MessageChannel()
+    workers.push(new Worker(new URL('./ort.worker.js', import.meta.url), { type: 'module' }))
+    workers[1].postMessage({ port: channel.port1 }, [channel.port1])
+    worker.postMessage({ port: channel.port2 }, [channel.port2])
+  }
+  return worker
 }
+
 const player = new Player()
 
 let pages = [] // the scanned pages: {png, url, width, height, text}
@@ -40,11 +53,9 @@ async function scan(files) {
     return fail(`Could not read that file: ${e.message}`)
   }
   $('thumbs').replaceChildren(...pages.map((p) => Object.assign(new Image(), { src: p.url })))
-  readText() // OCR runs beside the recognition
   // Copies go to the worker; the originals stay here for the side-by-side view.
   started = performance.now()
-  worker.postMessage({ pages: pages.map((p) => p.png), port: bridgePort }, bridgePort ? [bridgePort] : [])
-  bridgePort = null // handed over with the first scan
+  recogniser().postMessage({ pages: pages.map((p) => p.png) })
 }
 
 function progress(text, done, total) {
@@ -53,6 +64,7 @@ function progress(text, done, total) {
 }
 
 function fail(text) {
+  release(true)
   show('start')
   $('unsupported').hidden = false
   $('unsupported').textContent = text
@@ -70,7 +82,7 @@ const DETAILS = [
   [/page (\d+) skipped/, (m) => [`Page ${m[1]} has no music, skipped`, 1]],
 ]
 
-worker.onmessage = async ({ data }) => {
+async function onWorkerMessage({ data }) {
   if (data.type === 'status') {
     progress(data.text, data.done, data.total)
     if (/Reading page/.test(data.text)) {
@@ -88,14 +100,27 @@ worker.onmessage = async ({ data }) => {
   } else if (data.type === 'error') fail(data.text)
   else if (data.type === 'result') {
     Object.assign(window.sheetscan, { seconds: Math.round((performance.now() - started) / 100) / 10, bridge: data.bridge })
+    release(smallDevice)
     await open(data.xml)
   }
 }
 
-/** The text of every page: a PDF brings it along, images are read by OCR (begun on load). */
-function readText() {
-  for (const page of pages) page.words ??= page.text.length ? page.text : ocr(page).catch(() => [])
-  return Promise.all(pages.map((p) => p.words))
+/** Shut the recogniser down to free its memory (a gigabyte or two); the next scan restarts it. */
+function release(really) {
+  if (!really || !workers) return
+  workers.forEach((worker) => worker.terminate())
+  workers = null
+}
+
+/**
+ * The text of every page: a PDF brings it along, images are read by OCR - only now, after
+ * the recognition, so that the two don't need their memory at the same time.
+ */
+async function readText() {
+  const text = []
+  for (const page of pages) text.push(page.text.length ? page.text : await ocr(page).catch(() => []))
+  stopOcr()
+  return text
 }
 
 async function open(xml) {

@@ -72,9 +72,12 @@ function init(port) {
   })())
 }
 
+let port // to the networks' worker, where the page started one
+
 self.onmessage = async ({ data }) => {
+  if (data.port) return void (port = data.port)
   try {
-    const { pyodide, scan, jspi } = await init(data.port)
+    const { pyodide, scan, jspi } = await init(port)
     const paths = data.pages.map((bytes, i) => {
       const path = `/work/p${i + 1}.png`
       pyodide.FS.writeFile(path, new Uint8Array(bytes))

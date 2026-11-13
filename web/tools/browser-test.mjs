@@ -50,6 +50,7 @@ for (;;) {
     const hash = createHash('sha256').update(notes.join(',')).digest('hex')
     console.log(`${notes.length} notes via ${state.bridge} in ${Math.round((Date.now() - started) / 1000)}s:`, hash === EXPECTED ? 'identical to the native reading' : `DIFFERENT (${hash})`)
     if (hash !== EXPECTED) process.exitCode = 1
+    await checkEditor()
     break
   }
   if (Date.now() - started > 15 * 60_000) {
@@ -60,3 +61,51 @@ for (;;) {
   await new Promise((resolve) => setTimeout(resolve, 2000))
 }
 await browser.close()
+
+/** What a user does next: tempo, accidentals, an edit, playback, the two downloads. */
+async function checkEditor() {
+  const check = (name, ok, detail = '') => {
+    console.log(`${ok ? 'ok    ' : 'FAILED'} ${name}${detail ? ': ' + detail : ''}`)
+    if (!ok) process.exitCode = 1
+  }
+  const xml = () => page.evaluate(() => window.sheetscan.xml)
+  const count = (text, pattern) => (text.match(pattern) ?? []).length
+
+  // The sample states no tempo, so the field shows the default; setting it must reach the score.
+  check('tempo field', (await page.inputValue('#bpm')) === '120', await page.inputValue('#bpm'))
+  await page.fill('#bpm', '90')
+  await page.dispatchEvent('#bpm', 'change')
+  await page.waitForTimeout(1500)
+  check('tempo change reaches the score', /<sound tempo="90"/.test(await xml()))
+
+  // Every accidental the reading needs is drawn (the chorale has a few against its A major key).
+  const marked = count(await xml(), /<accidental>/g)
+  const drawn = await page.locator('#score g.accid use').count()
+  check('accidentals marked and drawn', marked > 0 && drawn === marked, `${marked} marked, ${drawn} drawn`)
+
+  // Select a note, move it up a step, undo. Each step redraws the score: wait for it.
+  const before = await xml()
+  const note = page.locator('#score g.note .notehead').nth(3)
+  await note.scrollIntoViewIfNeeded()
+  const box = await note.boundingBox()
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
+  const selected = await page.waitForSelector('#score .selected', { timeout: 5000 }).then(() => true, () => false)
+  await page.keyboard.press('ArrowUp')
+  const moved = await page.waitForFunction((was) => window.sheetscan.xml !== was, before, { timeout: 5000 }).then(() => true, () => false)
+  await page.keyboard.press('Control+z')
+  const undone = await page.waitForFunction((was) => window.sheetscan.xml === was, before, { timeout: 5000 }).then(() => true, () => false)
+  check('edit a note, undo it', selected && moved && undone, `selected ${selected}, moved ${moved}, undone ${undone}`)
+
+  await page.click('#play')
+  await page.waitForTimeout(1500)
+  check('playback highlights notes', (await page.locator('#score .playing').count()) > 0)
+  await page.click('#play')
+
+  for (const [button, pattern] of [['#save-xml', /^<\?xml[\s\S]*<score-partwise/], ['#save-midi', /^MThd/]]) {
+    const [download] = await Promise.all([page.waitForEvent('download'), page.click(button)])
+    const chunks = []
+    for await (const chunk of await download.createReadStream()) chunks.push(chunk)
+    const text = Buffer.concat(chunks).toString('latin1')
+    check(`download ${download.suggestedFilename()}`, pattern.test(text), `${text.length} bytes`)
+  }
+}
