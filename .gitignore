@@ -1,0 +1,8 @@
+node_modules/
+dist/
+dev-samples/
+__pycache__/
+.claude/
+# copied in by web/tools/pack_assets.py
+web/public/models/
+web/public/homr.zip
