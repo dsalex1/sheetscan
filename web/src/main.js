@@ -262,7 +262,7 @@ $('speed').oninput = (e) => {
 function download(name, type, content) {
   const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([content], { type })), download: name })
   a.click()
-  URL.revokeObjectURL(a.href)
+  setTimeout(() => URL.revokeObjectURL(a.href), 30_000) // revoking at once cancels the download in some browsers
 }
 const fileName = () => (score.title.trim() || 'score').replace(/[\\/:*?"<>|]+/g, '_')
 $('save-xml').onclick = () => download(`${fileName()}.musicxml`, 'application/vnd.recordare.musicxml+xml', score.xml)

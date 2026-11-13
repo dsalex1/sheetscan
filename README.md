@@ -57,6 +57,11 @@ notes; on scans and photos the text is read by OCR, which gets most lyrics but o
 of the chord symbols (and no flats); ornaments and articulations are kept only in part.
 A page takes about half a minute on a desktop computer, the first one a minute more.
 
+Every reading is also checked against the official MusicXML 4.0 schema
+(`bench/validate.py`): Finale refuses files which break it, and homr's own output does
+(the pipeline puts the elements into schema order). An export with lyrics was imported
+into Finale 27 to confirm.
+
 ## Develop
 
 ```sh

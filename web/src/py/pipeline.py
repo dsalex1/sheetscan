@@ -269,6 +269,25 @@ def _read_page(path):
     return xml, _staff_boxes(rows, to_input)
 
 
+# The MusicXML schema fixes the order of children; homr writes some out of it (voice
+# after type, alter after octave, clef before key). Most programs don't mind, Finale
+# refuses the file. bench/validate.py checks the result against the schema.
+_CHILD_ORDER = {
+    "note": "grace cue chord pitch unpitched rest duration tie instrument footnote level voice type dot "
+            "accidental time-modification stem notehead notehead-text staff beam notations lyric play listen",
+    "pitch": "step alter octave",
+    "attributes": "footnote level divisions key time staves part-symbol instruments clef staff-details "
+                  "transpose for-part directive measure-style",
+}
+
+
+def _order_children(score):
+    for tag, order in _CHILD_ORDER.items():
+        rank = {name: i for i, name in enumerate(order.split())}
+        for element in score.iter(tag):
+            element[:] = sorted(element, key=lambda child: rank.get(child.tag, len(rank)))  # stable
+
+
 def _give_every_staff_a_clef(score):
     """A staff that is silent at first (a piece opening on single-staff lines before the
     piano enters) gets its first clef only where it starts: put that clef at the beginning."""
@@ -306,6 +325,7 @@ def scan(paths, progress=lambda done, total: None):
             raise ValueError("No music found on any page")
         merged = process_concat(xmls)[0] if len(xmls) > 1 else ET.parse(xmls[0]).getroot()
         _give_every_staff_a_clef(merged)
+        _order_children(merged)
         field = ET.SubElement(ET.SubElement(merged.find("identification"), "miscellaneous"), "miscellaneous-field")
         field.set("name", "staff-layout")
         field.text = json.dumps(layout)
