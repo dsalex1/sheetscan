@@ -10,6 +10,8 @@ Test material (private scores) lives outside the repo in ~/.omrbench:
     pages_photo|scan/...     degraded copies of those pages (bench/degrade.py)
     gt/<name>_capscan.xml    capella-scan 8's reading of the PDF (baseline)
     out[_variant]/<name>.musicxml   our reading (cached; --force re-runs recognition)
+
+"schema" says whether our reading passes the MusicXML 4.0 schema (bench/validate.py).
 """
 import json
 import pathlib
@@ -21,6 +23,7 @@ HERE = pathlib.Path(__file__).parent
 sys.path.insert(0, str(HERE.parent / "web" / "src" / "py"))
 
 from evalscore import compare  # noqa: E402
+from validate import errors, schema  # noqa: E402
 
 BENCH = pathlib.Path.home() / ".omrbench"
 SCORES = json.loads((BENCH / "scores.json").read_text(encoding="utf-8"))
@@ -50,10 +53,12 @@ if __name__ == "__main__":
     suffix = f"_{args[args.index('--variant') + 1]}" if "--variant" in args else ""
     names = [a for a in args if a in SCORES]
     head = f"{'notes':>6} {'note':>6} {'pitch':>6}"
-    print(f"{'score':<11}{'truth':>6} | ours{suffix or '      '}: {head} | capella-scan: {head}")
+    xsd = schema()
+    print(f"{'score':<11}{'truth':>6} | ours{suffix or '      '}: {head} schema | capella-scan: {head}")
     for name in names or SCORES:
         truth = BENCH / "gt" / SCORES[name]
-        mine = cell(truth, ours(name, suffix, force))
+        reading = ours(name, suffix, force)
+        valid = "INVALID" if errors(reading, xsd) else "ok"
         n = compare(truth, truth)["truth_notes"]
-        print(f"{name:<11}{n:>6} |             {mine} |               "
+        print(f"{name:<11}{n:>6} |             {cell(truth, reading)} {valid:>6} |               "
               f"{cell(truth, BENCH / 'gt' / f'{name}_capscan.xml')}", flush=True)

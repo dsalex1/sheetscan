@@ -15,10 +15,11 @@ header { display: flex; align-items: center; gap: 14px; padding: 8px 14px; backg
 .tools { display: flex; flex: 1; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
 .gap { width: 8px; } .grow { flex: 1; }
 .tempo { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
-.tempo input { width: 90px; accent-color: var(--accent); }
+.tempo { color: var(--ink); font-size: 15px; white-space: nowrap; }
+.tempo input { width: 4.8em; }
 #title { width: 16ch; flex: 0 1 22ch; }
 
-button, input[type=text] { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; }
+button, input[type=text], input[type=number] { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; }
 button { cursor: pointer; white-space: nowrap; }
 button:hover:not(:disabled) { border-color: var(--accent); }
 button:disabled { opacity: .45; cursor: default; }
@@ -72,5 +73,5 @@ body.no-scan #scan { display: none; }
 @media (max-width: 800px) {
   #work { flex-direction: column; }
   #scan { flex: 0 0 34%; border-right: 0; border-bottom: 1px solid var(--line); }
-  #title, .tempo { display: none; }
+  #title { display: none; }
 }

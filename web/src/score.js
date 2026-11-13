@@ -44,6 +44,32 @@ function keyAlter(step, fifths) {
   return [...SHARPS].reverse().slice(0, -fifths).includes(step) ? -1 : 0
 }
 
+/**
+ * Mark the accidentals a measure has to print: a note gets one when its alteration is not
+ * what the key signature, or an earlier accidental on that line in the measure, says.
+ * (The recogniser only tells how each note sounds; programs differ in whether they then
+ * work out the signs themselves - Verovio, which draws the score here, does not.)
+ */
+export function spell(measure) {
+  const first = measure.querySelector('note')
+  const fifths = first ? inForce(first, 'key > fifths', 0) : 0
+  const sounding = new Map() // staff/step+octave -> alteration in force
+  for (const note of measure.querySelectorAll('note')) {
+    const pitch = child(note, 'pitch')
+    if (!pitch) {
+      setChild(note, 'accidental', null)
+      continue
+    }
+    const step = child(pitch, 'step').textContent
+    const line = `${child(note, 'staff')?.textContent ?? 1}/${step}${child(pitch, 'octave').textContent}`
+    const alter = +(child(pitch, 'alter')?.textContent ?? 0)
+    const expected = sounding.has(line) ? sounding.get(line) : keyAlter(step, fifths)
+    const tiedOver = note.querySelector(':scope > tie[type="stop"]')
+    setChild(note, 'accidental', alter !== expected && !tiedOver ? ACCIDENTALS[alter] : null, after('accidental'))
+    sounding.set(line, alter)
+  }
+}
+
 /** Recompute <duration> from <type>, dots and tuplet ratio, refining <divisions> if needed. */
 function retime(note) {
   const type = TYPES.indexOf(child(note, 'type')?.textContent)
@@ -58,9 +84,27 @@ function retime(note) {
   setChild(note, 'duration', Math.round(inForce(note, 'divisions', 1) * quarters), ['tie', 'voice', 'type', ...TAIL])
 }
 
+const BEATS = { half: 2, quarter: 1, eighth: 0.5 } // in quarter notes
+
+/** A <direction> for a tempo: {bpm, unit = 'quarter', dotted, words}. bpm counts units. */
+export function tempoMark(doc, { bpm, unit = 'quarter', dotted = false, words }) {
+  const el = (name, text) => Object.assign(doc.createElement(name), text == null ? {} : { textContent: text })
+  const direction = el('direction')
+  direction.setAttribute('placement', 'above')
+  if (words) direction.appendChild(el('direction-type')).append(el('words', words))
+  if (bpm) {
+    const metronome = direction.appendChild(el('direction-type')).appendChild(el('metronome'))
+    metronome.append(el('beat-unit', unit), ...(dotted ? [el('beat-unit-dot')] : []), el('per-minute', bpm))
+  }
+  const sound = direction.appendChild(el('sound'))
+  sound.setAttribute('tempo', Math.round(bpm * BEATS[unit] * (dotted ? 1.5 : 1)))
+  return direction
+}
+
 export class Score {
   constructor(xml) {
     this.doc = new DOMParser().parseFromString(xml, 'application/xml')
+    this.doc.querySelectorAll('measure').forEach(spell)
     this.done = []
     this.undone = []
     this.added = 0
@@ -74,14 +118,20 @@ export class Score {
     return this.doc.querySelector(`note[id="${CSS.escape(id)}"]`)
   }
 
-  /** Run a change to the note `id`; it may return false for "does not apply". */
-  #edit(id, change) {
-    const note = id && this.note(id)
+  /** Run a change to the document; it may return false for "does not apply". */
+  #change(change) {
     const before = this.xml
-    if (!note || change(note) === false) return false
+    if (change() === false) return false
     this.done.push(before)
     this.undone = []
     return true
+  }
+
+  /** Run a change to the note `id`, then put the accidentals of its measure right. */
+  #edit(id, change) {
+    const note = id && this.note(id)
+    const measure = note?.closest('measure')
+    return !!note && this.#change(() => (change(note) === false ? false : spell(measure)))
   }
 
   #restore(from, to) {
@@ -102,10 +152,7 @@ export class Score {
       const step = STEPS[((at % 7) + 7) % 7]
       child(pitch, 'step').textContent = step
       child(pitch, 'octave').textContent = Math.floor(at / 7)
-      if (steps % 7) {
-        setChild(pitch, 'alter', keyAlter(step, inForce(note, 'key > fifths', 0)) || null, ['octave'])
-        setChild(note, 'accidental', null)
-      }
+      if (steps % 7) setChild(pitch, 'alter', keyAlter(step, inForce(note, 'key > fifths', 0)) || null, ['octave'])
     })
   }
 
@@ -114,8 +161,7 @@ export class Score {
     return this.#edit(id, (note) => {
       const pitch = child(note, 'pitch')
       if (!pitch) return false
-      setChild(pitch, 'alter', value || null, ['octave'])
-      setChild(note, 'accidental', ACCIDENTALS[value], after('accidental'))
+      setChild(pitch, 'alter', value, ['octave']) // 0 too: a natural against the key signature
     })
   }
 
@@ -147,7 +193,6 @@ export class Score {
         setChild(made, 'octave', 4)
       }
       old.replaceWith(made)
-      setChild(note, 'accidental', null)
     })
   }
 
@@ -162,7 +207,6 @@ export class Score {
       }
       if (!child(note, 'pitch')) return false
       child(note, 'pitch').replaceWith(this.doc.createElement('rest'))
-      setChild(note, 'accidental', null)
     })
   }
 
@@ -192,6 +236,29 @@ export class Score {
     const root = this.doc.documentElement
     const work = child(root, 'work') ?? root.insertBefore(this.doc.createElement('work'), root.firstChild)
     setChild(work, 'work-title', text)
+  }
+
+  /** Quarter notes per minute at the start (120 if the score says nothing). */
+  get tempo() {
+    return Math.round(this.doc.querySelector('sound[tempo]')?.getAttribute('tempo') ?? 120)
+  }
+
+  /** Set the opening tempo; later tempo changes keep their proportion to it. */
+  set tempo(bpm) {
+    this.#change(() => {
+      const sounds = [...this.doc.querySelectorAll('sound[tempo]')]
+      if (!sounds.length) {
+        const first = this.doc.querySelector('part > measure > note')
+        first?.parentNode.insertBefore(tempoMark(this.doc, { bpm }), first)
+        return
+      }
+      const factor = bpm / sounds[0].getAttribute('tempo')
+      for (const sound of sounds) {
+        sound.setAttribute('tempo', Math.round(sound.getAttribute('tempo') * factor))
+        const shown = sound.parentNode.querySelector('per-minute')
+        if (shown) shown.textContent = Math.round(shown.textContent * factor)
+      }
+    })
   }
 
   /** Lay the score out `width` pixels wide; returns one SVG string per page. */

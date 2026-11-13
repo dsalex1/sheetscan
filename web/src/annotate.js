@@ -1,7 +1,9 @@
-// Puts the text found on the pages into the score: title, composer, lyrics, chord symbols.
+// Puts the text found on the pages into the score: title, composer, tempo, lyrics, chord symbols.
 // Text is a list of {str, x, y, h, w} per page (baseline start, font height, width, in
 // page-image pixels) from the PDF's text layer or from OCR. Staff positions come from
 // the recogniser (the "staff-layout" field), note positions from the note ids.
+
+import { tempoMark } from './score.js'
 
 // A root, a quality built from the usual pieces only (so words like "Der" don't match), a bass.
 const CHORD = /^([A-G])([#b♯♭]?)((?:maj|min|dim|aug|sus|add|omit|no|m|M|\d|[#b♯♭+°ø△()\-,])*)(?:\/([A-G])([#b♯♭]?))?$/
@@ -14,15 +16,50 @@ const KINDS = {
 }
 const ALTER = { '#': 1, '♯': 1, b: -1, '♭': -1 }
 
+// Music fonts keep their glyphs in the private-use area. A few matter inside text: the
+// sharp and flat of chord symbols and the note of a metronome mark (Finale's Maestro
+// layout first, then SMuFL). They survive only when they join real text.
+const GLYPHS = {
+  '\uF023': '#', '\uF062': 'b', '\uF071': 'q', '\uF068': 'h', '\uF065': 'e', '\uF06B': '.',
+  '\uE1D5': 'q', '\uECA5': 'q', '\uE1D3': 'h', '\uECA3': 'h', '\uE1D7': 'e', '\uECA7': 'e', '\uE1E7': '.', '\uECB7': '.',
+}
+const UNITS = { q: 'quarter', h: 'half', e: 'eighth' }
+// "q = 156" (the note glyph mapped above), "(q. = ca. 60)", and what OCR makes of the
+// note: "J=156", "d = 156" - there the unit is unknown and taken as a quarter.
+const METRONOME = /(?:\b([qhe])(\.?))?\s*=\s*(?:c(?:irc)?a\.?\s*)?(\d{2,3})/
+const TEMPO_WORDS = {
+  grave: 40, largo: 50, larghetto: 60, lento: 54, adagio: 66, andante: 84, andantino: 90, moderato: 108,
+  allegretto: 116, allegro: 132, vivace: 160, presto: 176, prestissimo: 200,
+}
+const TEMPO_WORD = new RegExp(`\\b(${Object.keys(TEMPO_WORDS).join('|')})\\b`, 'i')
+
+/** The tempo a line of text states, if any: {tokens, x, bpm, unit, dotted, words}. */
+function readTempo(line) {
+  const number = line.map((t) => METRONOME.exec(t.str))
+  // OCR may split "J = 156" into pieces: then the whole line has to be read as one.
+  const joined = number.some(Boolean) ? null : METRONOME.exec(line.map((t) => t.str).join(' '))
+  const word = line.find((t) => TEMPO_WORD.test(t.str))
+  const m = number.find(Boolean) ?? joined
+  if (!m && !word) return null
+  const tokens = joined ? line : line.filter((t, i) => number[i] || t === word)
+  return {
+    tokens,
+    x: Math.min(...tokens.map((t) => t.x)),
+    bpm: m ? +m[3] : TEMPO_WORDS[TEMPO_WORD.exec(word.str)[1].toLowerCase()],
+    unit: UNITS[m?.[1]] ?? 'quarter',
+    dotted: !!m?.[2],
+    // Words like "Presto ma dolce" are kept; a bare metronome mark needs none.
+    words: word?.str.replace(/\(?\s*\S?\.?\s*=.*$/, '').trim(),
+  }
+}
+
 /** Join the pieces a PDF splits text into ("C" "sus" "/F") and drop music-font glyphs. */
 export function tokens(items) {
-  // Music fonts keep their glyphs in the private-use area; Finale's sharp is F023, its flat
-  // F062. Those two matter inside chord symbols, so they survive if they join real text.
   const clean = items
     .map((it) => ({
       ...it,
-      music: !/[^-\s]/.test(it.str),
-      str: it.str.replace(//g, '#').replace(//g, 'b').replace(/[-]/g, ''),
+      music: !/[^\uE000-\uF8FF\s]/.test(it.str),
+      str: it.str.replace(/[\uE000-\uF8FF]/g, (glyph) => GLYPHS[glyph] ?? ''),
     }))
     .filter((it) => it.str.trim())
     .sort((a, b) => a.x - b.x)
@@ -76,7 +113,7 @@ export function annotate(doc, text) {
   const field = doc.querySelector('miscellaneous-field[name="staff-layout"]')
   const layout = JSON.parse(field?.textContent ?? '[]')
   field?.parentNode.remove()
-  const added = { title: '', lyrics: 0, chords: 0 }
+  const added = { title: '', lyrics: 0, chords: 0, tempo: 0 }
 
   // Every note and rest with a known place, filed under the staff it lies closest to.
   const byStaff = new Map() // "page/staff index" -> [{el, x}]
@@ -153,16 +190,27 @@ export function annotate(doc, text) {
       const above = staffs.map((s, i) => [y - s[3], i]).filter(([d]) => d > 0).sort((a, b) => a[0] - b[0])[0]
       const below = staffs.map((s, i) => [s[1] - y, i]).filter(([d]) => d > 0).sort((a, b) => a[0] - b[0])[0]
       const unit = (i) => (staffs[i][3] - staffs[i][1]) / 4
+      const nearerBelow = below && (!above || below[0] < above[0])
+
+      // A tempo stands above its staff, perhaps beside other text on the same line.
+      const tempo = nearerBelow && below[0] < 12 * unit(below[1]) && readTempo(line)
+      const anchors = byStaff.get(`${page}/${below?.[1]}`) ?? []
+      if (tempo && anchors.length) {
+        const { anchor } = under(anchors, tempo.x, unit(below[1]))
+        anchor.el.parentNode.insertBefore(tempoMark(doc, tempo), anchor.el)
+        added.tempo++
+        line.splice(0, line.length, ...line.filter((t) => !tempo.tokens.includes(t)))
+        if (!line.length) continue
+      }
+
       const chords = line.map((t) => CHORD.exec(t.str))
       // Chord symbols sit close above their staff, lyrics close below theirs: the nearer
       // staff says which a line is. (Its words alone don't: OCR garbles some chords, and
       // "A" or "Am" can be a syllable.)
-      const nearerBelow = below && (!above || below[0] < above[0])
       const found = chords.filter(Boolean).length
 
       if (nearerBelow) {
         if (below[0] > 8 * unit(below[1]) || found < Math.min(2, line.length)) continue
-        const anchors = byStaff.get(`${page}/${below[1]}`) ?? []
         // Rehearsal letters match too, but are set in another size than the chords.
         const sizes = line.filter((t, i) => chords[i]).map((t) => t.h).sort((a, b) => a - b)
         const size = sizes[sizes.length >> 1]

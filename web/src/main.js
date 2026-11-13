@@ -137,6 +137,7 @@ async function draw() {
   pane.scrollTop = scroll
   midi = player.load(await verovio())
   select(selected)
+  $('bpm').value = score.tempo
   $('undo').disabled = !score.done.length
   $('redo').disabled = !score.undone.length
 }
@@ -223,7 +224,7 @@ const KEYS = {
 for (let i = 0; i < 6; i++) KEYS[i + 1] = () => edit('duration', i)
 
 document.addEventListener('keydown', (e) => {
-  if (document.body.dataset.view !== 'work' || e.target.matches('input[type=text]')) return
+  if (document.body.dataset.view !== 'work' || e.target.matches('input')) return
   const action = KEYS[e.key] ?? KEYS[e.key.toLowerCase()]
   if (action && action(e) !== false) e.preventDefault()
 })
@@ -252,9 +253,10 @@ function togglePlay() {
   )
 }
 $('play').onclick = togglePlay
-$('speed').oninput = (e) => {
-  player.speed = e.target.value / 100
+$('bpm').onchange = async (e) => {
   player.stop()
+  score.tempo = Math.min(Math.max(Math.round(e.target.value) || 120, 20), 400)
+  await draw()
 }
 
 // ---------- files in, files out ----------

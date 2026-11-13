@@ -1,6 +1,5 @@
 // Plays the score Verovio has loaded, with a small built-in synth.
 export class Player {
-  speed = 1
   notes = [] // {id, t, dur (ms), pitch (MIDI)}
   #timer = null
   #context = null
@@ -55,16 +54,16 @@ export class Player {
   play(from, onTick, onEnd) {
     this.stop()
     const context = this.#audio()
-    const start = context.currentTime + 0.1 - from / 1000 / this.speed
-    const when = (ms) => start + ms / 1000 / this.speed
+    const start = context.currentTime + 0.1 - from / 1000
+    const when = (ms) => start + ms / 1000
     const end = Math.max(0, ...this.notes.map((n) => n.t + n.dur))
     let next = this.notes.findIndex((n) => n.t >= from)
     if (next < 0) next = this.notes.length
     this.#onEnd = onEnd
     this.#timer = setInterval(() => {
       for (; next < this.notes.length && when(this.notes[next].t) < context.currentTime + 0.25; next++)
-        this.#voice(this.notes[next].pitch, when(this.notes[next].t), this.notes[next].dur / 1000 / this.speed)
-      const now = (context.currentTime - start) * 1000 * this.speed
+        this.#voice(this.notes[next].pitch, when(this.notes[next].t), this.notes[next].dur / 1000)
+      const now = (context.currentTime - start) * 1000
       onTick(this.notes.filter((n) => n.t <= now && now < n.t + n.dur).map((n) => n.id))
       if (now > end) this.stop()
     }, 40)
