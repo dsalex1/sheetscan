@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Turn scanned sheet music (PDF or photos) into editable MusicXML and MIDI, right in your browser." />
+    <title>Sheetscan – sheet music to MusicXML</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎼</text></svg>" />
+    <!-- Shared memory (threads, and the whole recogniser on Safari before 27) needs a
+         cross-origin isolated page; a static host sends no such headers, so a service
+         worker adds them. Its default "credentialless" mode leaves WebKit's workers
+         without shared memory: ask for require-corp. -->
+    <script>window.coi = { coepCredentialless: () => false }</script>
+    <script src="coi-serviceworker.min.js"></script>
+    <script type="module" crossorigin src="./assets/index-BcQDmhol.js"></script>
+    <link rel="modulepreload" crossorigin href="./assets/rolldown-runtime-WkwZ5CU-.js">
+    <link rel="stylesheet" crossorigin href="./assets/index-DI7JsEUm.css">
+  </head>
+  <body data-view="start">
+    <header>
+      <a class="brand" href="./">Sheetscan</a>
+      <div class="tools">
+        <button id="play" title="Play / stop (Space)">▶ Play</button>
+        <label class="tempo" title="Tempo in quarter notes per minute. Read from the page if it states one; change it to play slower or faster.">♩ = <input id="bpm" type="number" min="20" max="400" step="1" inputmode="numeric" /></label>
+        <span class="gap"></span>
+        <button id="undo" title="Undo (Ctrl+Z)">Undo</button>
+        <button id="redo" title="Redo (Ctrl+Y)">Redo</button>
+        <span class="gap"></span>
+        <input id="title" type="text" placeholder="Title" aria-label="Title" />
+        <span class="grow"></span>
+        <button id="toggle-scan" title="Show or hide the original pages">Original</button>
+        <button id="save-xml" class="primary" title="For Finale, Sibelius, capella, MuseScore, Dorico…">Download MusicXML</button>
+        <button id="save-midi">MIDI</button>
+        <button id="again">New scan</button>
+      </div>
+    </header>
+
+    <main>
+      <section id="start">
+        <label id="drop">
+          <input id="files" type="file" accept="application/pdf,image/*" multiple hidden />
+          <strong>Drop sheet music here</strong>
+          <span>PDF, scans or phone photos — or click to choose files</span>
+        </label>
+        <button id="sample">Try a sample page (Bach chorale)</button>
+        <p class="notes">
+          You get an editable score to check against the original, play back, correct, and download as
+          MusicXML (Finale, Sibelius, capella, MuseScore, Dorico) or MIDI.<br />
+          Everything runs on your device; your music is not uploaded. The first scan downloads the
+          recognition models (about 150 MB, kept for next time).
+        </p>
+        <p id="unsupported" class="error" hidden></p>
+        <p class="notes credits">
+          Free software (AGPL-3.0): <a href="https://github.com/dsalex1/sheetscan">source and accuracy tests</a>.
+          Recognition by <a href="https://github.com/liebharc/homr">homr</a>, engraving by
+          <a href="https://www.verovio.org">Verovio</a>.
+        </p>
+      </section>
+
+      <section id="busy">
+        <div class="progress"><div id="bar"></div></div>
+        <p id="status">Starting…</p>
+        <p id="detail"></p>
+        <div id="thumbs"></div>
+      </section>
+
+      <section id="work">
+        <div id="scan" aria-label="Original pages"></div>
+        <div id="score" aria-label="Recognised score" tabindex="0"></div>
+      </section>
+    </main>
+
+    <footer id="inspector">
+      <span class="group" title="Pitch (↑ ↓, with Shift an octave)">
+        <button data-do="move" data-arg="1">↑</button><button data-do="move" data-arg="-1">↓</button>
+        <button data-do="move" data-arg="7">8va ↑</button><button data-do="move" data-arg="-7">8va ↓</button>
+      </span>
+      <span class="group" title="Accidental (+, -, N)">
+        <button data-do="alter" data-arg="1">♯</button><button data-do="alter" data-arg="-1">♭</button><button data-do="alter" data-arg="0">♮</button>
+      </span>
+      <span class="group" title="Note value (1–6, . for a dot)">
+        <button data-do="duration" data-arg="0">1</button><button data-do="duration" data-arg="1">½</button>
+        <button data-do="duration" data-arg="2">¼</button><button data-do="duration" data-arg="3">⅛</button>
+        <button data-do="duration" data-arg="4">1⁄16</button><button data-do="duration" data-arg="5">1⁄32</button>
+        <button data-do="dot">dot</button>
+      </span>
+      <span class="group">
+        <button data-do="rest" title="Note ↔ rest (R)">rest</button>
+        <button data-do="add" title="Add a note to the chord (A)">+ note</button>
+        <button data-do="remove" title="Delete (Del)">delete</button>
+      </span>
+      <span id="hint">Click a note to edit it. ← → move between notes.</span>
+    </footer>
+  </body>
+</html>
